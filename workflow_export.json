@@ -1,0 +1,662 @@
+{
+  "name": "YouTube Anki v2",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// YouTube URL에서 Video ID 추출\nconst input = $input.first().json;\n// 다양한 입력 형식 지원\nconst url = input.body?.youtubeUrl || input.body?.youtube_url || input.youtubeUrl || input.youtube_url || '';\n\n// Video ID 추출 (다양한 YouTube URL 형식 지원)\nlet videoId = '';\nconst patterns = [\n  /(?:youtube\\.com\\/watch\\?v=)([^&]+)/,\n  /(?:youtu\\.be\\/)([^?]+)/,\n  /(?:youtube\\.com\\/embed\\/)([^?]+)/,\n  /(?:youtube\\.com\\/v\\/)([^?]+)/\n];\n\nfor (const pattern of patterns) {\n  const match = url.match(pattern);\n  if (match) {\n    videoId = match[1];\n    break;\n  }\n}\n\nif (!videoId) {\n  throw new Error('Invalid YouTube URL: ' + url);\n}\n\nreturn [{ json: { videoId, originalUrl: url } }];"
+      },
+      "id": "extract-video-id",
+      "name": "Extract Video ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'http://127.0.0.1:8767/transcript?videoId=' + $json.videoId }}",
+        "options": {}
+      },
+      "id": "get-transcript",
+      "name": "Get YouTube Transcript",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1616,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// YouTube Transcript를 문장 단위로 파싱 (짧은 문장으로 분리)\nconst transcriptResponse = $input.first().json;\n\nif (!transcriptResponse.success || !transcriptResponse.transcript) {\n  throw new Error(\"Failed to get transcript: \" + JSON.stringify(transcriptResponse));\n}\n\nconst transcriptItems = transcriptResponse.transcript;\nconst videoId = transcriptResponse.videoId || \"\";\n\n// 설정: 문장 길이 제한\nconst MAX_WORDS = 15;  // 최대 단어 수\nconst MAX_TIME_GAP = 2.5;  // 최대 시간 간격 (초)\n\n// 문장으로 합치기 (짧게 유지)\nconst sentences = [];\nlet currentSentence = \"\";\nlet currentStart = 0;\nlet lastEnd = 0;\n\nfunction countWords(text) {\n  return text.trim().split(/\\s+/).filter(w => w.length > 0).length;\n}\n\nfunction saveSentence(text, start) {\n  const trimmed = text.trim();\n  if (trimmed && countWords(trimmed) >= 3) {  // 최소 3단어 이상\n    sentences.push({\n      index: sentences.length,\n      text: trimmed,\n      start: start\n    });\n  }\n}\n\nfor (const item of transcriptItems) {\n  const text = item.text.replace(/\\n/g, \" \").trim();\n  const itemStart = item.start;\n  const itemDuration = item.duration || 2;\n  const itemEnd = itemStart + itemDuration;\n  \n  // 시간 간격이 크면 새 문장 시작\n  const timeGap = currentSentence ? (itemStart - lastEnd) : 0;\n  \n  if (currentSentence && timeGap > MAX_TIME_GAP) {\n    saveSentence(currentSentence, currentStart);\n    currentSentence = \"\";\n  }\n  \n  // 문장 시작\n  if (!currentSentence) {\n    currentStart = itemStart;\n  }\n  \n  // 텍스트 추가\n  currentSentence += \" \" + text;\n  lastEnd = itemEnd;\n  \n  // 마침표로 끝나면 문장 종료\n  if (text.match(/[.!?]$/)) {\n    saveSentence(currentSentence, currentStart);\n    currentSentence = \"\";\n    continue;\n  }\n  \n  // 단어 수가 초과하면 자연스러운 끊김 찾기\n  const wordCount = countWords(currentSentence);\n  if (wordCount >= MAX_WORDS) {\n    // 자연스러운 끊김 패턴 (접속사, 콤마 등)\n    const breakPatterns = [\n      /,\\s*(and|but|or|so|because|when|if|that|which|who|where|while|although|however)\\s/gi,\n      /,\\s/g,\n      /\\s(and|but|or|so)\\s/gi\n    ];\n    \n    let broken = false;\n    for (const pattern of breakPatterns) {\n      const matches = [...currentSentence.matchAll(pattern)];\n      if (matches.length > 0) {\n        // 마지막 매치 지점에서 자르기\n        const lastMatch = matches[matches.length - 1];\n        const breakPoint = lastMatch.index + lastMatch[0].indexOf(lastMatch[0].trim());\n        \n        if (breakPoint > currentSentence.length * 0.4) {  // 40% 이후에서만 자르기\n          const firstPart = currentSentence.substring(0, breakPoint).trim();\n          const secondPart = currentSentence.substring(breakPoint).trim();\n          \n          saveSentence(firstPart, currentStart);\n          currentSentence = secondPart;\n          currentStart = itemStart;  // 대략적인 시작 시간\n          broken = true;\n          break;\n        }\n      }\n    }\n    \n    // 자연스러운 끊김이 없으면 그냥 저장\n    if (!broken && wordCount >= MAX_WORDS + 5) {\n      saveSentence(currentSentence, currentStart);\n      currentSentence = \"\";\n    }\n  }\n}\n\n// 남은 문장 저장\nif (currentSentence.trim()) {\n  saveSentence(currentSentence, currentStart);\n}\n\n// Gemini에 인덱스와 함께 전달\nconst indexedSentences = sentences.map(s => `[${s.index}] ${s.text}`);\n\nconst prompt = `You are an expert English teacher specializing in PHRASAL VERBS that native speakers use daily.\n\n## Your Task\nFrom the transcript below, find sentences containing PHRASAL VERBS that are:\n1. Commonly used by native English speakers in everyday conversation\n2. Essential for natural-sounding English\n3. Practical and useful for learners\n\n## What is a Phrasal Verb?\nA phrasal verb = BASE VERB + PARTICLE(s) (preposition/adverb)\nExamples: \"give up\", \"look after\", \"come up with\", \"run out of\"\n\n## Selection Criteria\n✅ INCLUDE:\n- High-frequency phrasal verbs natives use daily\n- Natural conversational expressions\n- Idiomatically meaningful (meaning changes from literal)\n- Useful in multiple contexts\n\n❌ EXCLUDE:\n- \"subscribe\", \"click\", \"like this video\" (YouTube spam)\n- Overly technical or rare phrasal verbs\n- Simple verb + preposition that aren't true phrasal verbs\n\n## Important\n- Each sentence has an INDEX in brackets like [0], [1], [2]\n- You MUST return the EXACT index number\n- Select 10-15 best examples\n\n## Response Format (JSON array only):\n[{\n  \"sentence_index\": 5,\n  \"original\": \"exact sentence from transcript (without the [5] prefix)\",\n  \"korean\": \"자연스러운 한국어 번역\",\n  \"base_verb\": \"GET\",\n  \"phrasal_verb\": \"get up\",\n  \"particle\": \"up\",\n  \"literal_meaning\": \"위로 얻다/가져가다\",\n  \"idiomatic_meaning\": \"일어나다, 기상하다 (관용적 의미)\",\n  \"core_image\": \"UP의 핵심 이미지: 완전히 위로 올라오는 동작\",\n  \"usage_note\": \"아침에 잠에서 깨어 일어날 때 가장 자주 사용. 'What time do you usually get up?'\",\n  \"alternatives\": [\"wake up\", \"rise\", \"get out of bed\"],\n  \"formal_equivalent\": \"arise (formal)\",\n  \"example_sentences\": [\n    \"I usually get up at 7 AM.\",\n    \"She got up early to catch the flight.\"\n  ]\n}]\n\n## Field Descriptions:\n- alternatives: 2-3개의 동의어 또는 대체 표현 (구동사 또는 단일 동사)\n- formal_equivalent: 격식체에서 사용하는 동등한 표현 (있는 경우)\n- example_sentences: 해당 구동사를 사용한 추가 예문 2개\n\n## Numbered Sentences from Transcript:\n\\${indexedSentences.join(\"\\n\")}`;\n\nreturn [{\n  json: {\n    prompt: prompt,\n    sentences: sentences,\n    videoId: videoId\n  }\n}];"
+      },
+      "id": "parse-transcript",
+      "name": "Parse & Group Sentences",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1904,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gemini API를 호출하여 phrasal verb 문장 필터링\nconst GEMINI_API_KEY = \"YOUR_GEMINI_API_KEY\";\n\nconst inputData = $input.first().json;\nconst prompt = inputData.prompt;\nconst sentences = inputData.sentences;\nconst videoId = inputData.videoId;\n\nconst response = await this.helpers.httpRequest({\n  method: \"POST\",\n  url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`,\n  headers: { \"Content-Type\": \"application/json\" },\n  body: {\n    contents: [{ parts: [{ text: prompt }] }],\n    generationConfig: {\n      temperature: 0.3,\n      topK: 20,\n      topP: 0.8,\n      maxOutputTokens: 8192,\n      responseMimeType: \"application/json\"\n    }\n  },\n  json: true\n});\n\nlet filteredSentences = [];\ntry {\n  const textContent = response.candidates[0].content.parts[0].text;\n  \n  try {\n    filteredSentences = JSON.parse(textContent);\n  } catch (parseError) {\n    // JSON 복구 시도\n    let fixedJson = textContent.trim();\n    const lastCompleteObj = fixedJson.lastIndexOf('}');\n    if (lastCompleteObj > 0) {\n      fixedJson = fixedJson.substring(0, lastCompleteObj + 1);\n      if (!fixedJson.endsWith(']')) fixedJson += ']';\n      try {\n        filteredSentences = JSON.parse(fixedJson);\n      } catch (e) {\n        const objectPattern = /\\{[^{}]*\"sentence_index\"\\s*:\\s*\\d+[^{}]*\\}/g;\n        const matches = textContent.match(objectPattern);\n        if (matches) {\n          filteredSentences = matches.map(m => {\n            try { return JSON.parse(m); } catch { return null; }\n          }).filter(Boolean);\n        }\n      }\n    }\n  }\n\n  if (!Array.isArray(filteredSentences)) filteredSentences = [];\n  filteredSentences = filteredSentences.filter(s => s && typeof s.sentence_index === 'number' && s.original);\n} catch (e) {\n  filteredSentences = [];\n}\n\n// Fallback: Gemini가 충분히 반환하지 않은 경우\nif (filteredSentences.length < 3) {\n  const phrasalVerbPattern = /(get|take|put|come|go|look|turn|give|make|set|pick|bring|call|cut|break|hold|keep|run|work|figure|check|fill|show|point|end|hang|carry|pull|throw|knock|pass|try|find|sort|back|shut|slow|speed|calm|cheer|clean|clear|close|cool|dress|dry|eat|grow|heat|hurry|light|line|mix|open|pay|pile|roll|save|sell|send|settle|sign|sit|split|stand|start|stay|sum|tidy|wake|warm|watch|wear|wipe|wrap|write|zoom)\\s+(up|down|in|out|on|off|away|back|over|through|around|along|about|across|after|ahead|apart|aside|by|forward|into|onto|together|under|with)/i;\n  \n  filteredSentences = sentences\n    .filter(s => phrasalVerbPattern.test(s.text))\n    .slice(0, 15)\n    .map((s, i) => {\n      const match = s.text.match(phrasalVerbPattern);\n      const pv = match ? match[0] : 'unknown';\n      return {\n        sentence_index: s.index || i,\n        original: s.text,\n        phrasal_verb: pv,\n        korean: \"(번역 준비 중)\",\n        literal_meaning: \"(직역 준비 중)\",\n        idiomatic_meaning: \"(관용 의미 준비 중)\",\n        core_image: \"(핵심 이미지 준비 중)\",\n        usage_note: \"(사용법 준비 중)\"\n      };\n    });\n}\n\n// 모든 문장에 필수 필드 기본값 보장\nfilteredSentences = filteredSentences.map(s => ({\n  ...s,\n  korean: s.korean || \"(번역 없음)\",\n  literal_meaning: s.literal_meaning || \"(직역 없음)\",\n  idiomatic_meaning: s.idiomatic_meaning || \"(관용 의미 없음)\",\n  core_image: s.core_image || \"(핵심 이미지 없음)\",\n  usage_note: s.usage_note || \"(사용법 없음)\"\n}));\n\nreturn [{\n  json: {\n    filteredSentences: filteredSentences,\n    originalSentences: sentences,\n    videoId: videoId,\n    count: filteredSentences.length\n  }\n}];"
+      },
+      "id": "gemini-filter",
+      "name": "Filter Practical Sentences (Gemini)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2176,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 구동사 하이라이트 + TTS 정확도 개선 (동사 활용형 지원)\nconst inputData = $input.first().json;\n\nconst sentences = inputData.filteredSentences || [];\nconst originalSentences = inputData.originalSentences || [];\nconst videoId = inputData.videoId || \"\";\n\nif (sentences.length === 0) {\n  return [{ json: { error: \"No sentences found\", videoId: videoId } }];\n}\n\nconst results = [];\nconst GOOGLE_TTS_KEY = \"YOUR_GOOGLE_TTS_API_KEY\";\n\n// 타임스탬프 찾기 + 원본 문장 가져오기\nfunction findOriginalSentence(sentence, sentenceIndex, originalSentences) {\n  const geminiText = sentence.original || \"\";\n\n  // 1. 인덱스로 직접 조회\n  if (typeof sentenceIndex === 'number' &&\n      sentenceIndex >= 0 &&\n      sentenceIndex < originalSentences.length &&\n      originalSentences[sentenceIndex]) {\n\n    const orig = originalSentences[sentenceIndex];\n    const origText = orig.text || \"\";\n    const origStart = orig.start;\n\n    // 검증: 최소 3단어 이상 겹치는지\n    const origWords = origText.toLowerCase().split(/\\s+/).filter(w => w.length > 2);\n    const sentWords = geminiText.toLowerCase().split(/\\s+/).filter(w => w.length > 2);\n    let matchCount = 0;\n    for (const w of sentWords.slice(0, 10)) {\n      if (origWords.includes(w)) matchCount++;\n    }\n\n    if (matchCount >= 3) {\n      return {\n        text: origText,\n        timestamp: Math.floor(origStart || 0),\n        method: 'index'\n      };\n    }\n  }\n\n  // 2. Fuzzy 매칭\n  let bestMatch = { score: 0, text: geminiText, timestamp: 0 };\n  const sentWords = geminiText.toLowerCase().replace(/[^a-z\\s]/g, '').split(/\\s+/).filter(w => w.length > 3);\n\n  for (const orig of originalSentences) {\n    if (!orig.text) continue;\n    const origWords = orig.text.toLowerCase().replace(/[^a-z\\s]/g, '').split(/\\s+/);\n\n    let matchCount = 0;\n    for (const w of sentWords) {\n      if (origWords.some(ow => ow.includes(w) || w.includes(ow))) {\n        matchCount++;\n      }\n    }\n\n    const score = sentWords.length > 0 ? matchCount / sentWords.length : 0;\n\n    if (score > bestMatch.score) {\n      bestMatch = {\n        score: score,\n        text: orig.text,\n        timestamp: Math.floor(orig.start || 0)\n      };\n    }\n  }\n\n  if (bestMatch.score >= 0.5) {\n    return { text: bestMatch.text, timestamp: bestMatch.timestamp, method: 'fuzzy' };\n  }\n\n  // 3. 폴백\n  return { text: geminiText, timestamp: 0, method: 'fallback' };\n}\n\n// 동사 어간 추출 (활용형 처리)\nfunction getVerbStem(verb) {\n  verb = verb.toLowerCase();\n  // 불규칙 동사 처리\n  const irregulars = {\n    'ran': 'run', 'running': 'run', 'runs': 'run',\n    'got': 'get', 'getting': 'get', 'gets': 'get',\n    'went': 'go', 'going': 'go', 'goes': 'go', 'gone': 'go',\n    'came': 'come', 'coming': 'come', 'comes': 'come',\n    'took': 'take', 'taking': 'take', 'takes': 'take', 'taken': 'take',\n    'put': 'put', 'putting': 'put', 'puts': 'put',\n    'made': 'make', 'making': 'make', 'makes': 'make',\n    'gave': 'give', 'giving': 'give', 'gives': 'give', 'given': 'give',\n    'set': 'set', 'setting': 'set', 'sets': 'set',\n    'brought': 'bring', 'bringing': 'bring', 'brings': 'bring',\n    'thought': 'think', 'thinking': 'think', 'thinks': 'think',\n    'told': 'tell', 'telling': 'tell', 'tells': 'tell',\n    'found': 'find', 'finding': 'find', 'finds': 'find',\n    'left': 'leave', 'leaving': 'leave', 'leaves': 'leave',\n    'held': 'hold', 'holding': 'hold', 'holds': 'hold',\n    'stood': 'stand', 'standing': 'stand', 'stands': 'stand',\n    'kept': 'keep', 'keeping': 'keep', 'keeps': 'keep',\n    'let': 'let', 'letting': 'let', 'lets': 'let',\n    'began': 'begin', 'beginning': 'begin', 'begins': 'begin', 'begun': 'begin',\n    'shown': 'show', 'showing': 'show', 'shows': 'show', 'showed': 'show',\n    'knew': 'know', 'knowing': 'know', 'knows': 'know', 'known': 'know',\n    'grew': 'grow', 'growing': 'grow', 'grows': 'grow', 'grown': 'grow',\n    'threw': 'throw', 'throwing': 'throw', 'throws': 'throw', 'thrown': 'throw',\n    'broke': 'break', 'breaking': 'break', 'breaks': 'break', 'broken': 'break',\n    'spoke': 'speak', 'speaking': 'speak', 'speaks': 'speak', 'spoken': 'speak',\n    'wrote': 'write', 'writing': 'write', 'writes': 'write', 'written': 'write',\n    'drove': 'drive', 'driving': 'drive', 'drives': 'drive', 'driven': 'drive',\n    'ate': 'eat', 'eating': 'eat', 'eats': 'eat', 'eaten': 'eat',\n    'fell': 'fall', 'falling': 'fall', 'falls': 'fall', 'fallen': 'fall',\n    'sat': 'sit', 'sitting': 'sit', 'sits': 'sit',\n    'wore': 'wear', 'wearing': 'wear', 'wears': 'wear', 'worn': 'wear',\n    'cut': 'cut', 'cutting': 'cut', 'cuts': 'cut',\n    'hit': 'hit', 'hitting': 'hit', 'hits': 'hit',\n    'shut': 'shut', 'shutting': 'shut', 'shuts': 'shut',\n    'paid': 'pay', 'paying': 'pay', 'pays': 'pay',\n    'said': 'say', 'saying': 'say', 'says': 'say',\n    'laid': 'lay', 'laying': 'lay', 'lays': 'lay',\n    'heard': 'hear', 'hearing': 'hear', 'hears': 'hear',\n    'sold': 'sell', 'selling': 'sell', 'sells': 'sell',\n    'built': 'build', 'building': 'build', 'builds': 'build',\n    'sent': 'send', 'sending': 'send', 'sends': 'send',\n    'spent': 'spend', 'spending': 'spend', 'spends': 'spend',\n    'lost': 'lose', 'losing': 'lose', 'loses': 'lose',\n    'caught': 'catch', 'catching': 'catch', 'catches': 'catch',\n    'taught': 'teach', 'teaching': 'teach', 'teaches': 'teach',\n    'bought': 'buy', 'buying': 'buy', 'buys': 'buy',\n    'fought': 'fight', 'fighting': 'fight', 'fights': 'fight',\n    'hung': 'hang', 'hanging': 'hang', 'hangs': 'hang',\n    'dug': 'dig', 'digging': 'dig', 'digs': 'dig',\n    'swam': 'swim', 'swimming': 'swim', 'swims': 'swim', 'swum': 'swim',\n    'sank': 'sink', 'sinking': 'sink', 'sinks': 'sink', 'sunk': 'sink',\n    'rang': 'ring', 'ringing': 'ring', 'rings': 'ring', 'rung': 'ring',\n    'sang': 'sing', 'singing': 'sing', 'sings': 'sing', 'sung': 'sing',\n    'sprang': 'spring', 'springing': 'spring', 'springs': 'spring', 'sprung': 'spring',\n    'stuck': 'stick', 'sticking': 'stick', 'sticks': 'stick',\n    'swept': 'sweep', 'sweeping': 'sweep', 'sweeps': 'sweep',\n    'slept': 'sleep', 'sleeping': 'sleep', 'sleeps': 'sleep',\n    'wept': 'weep', 'weeping': 'weep', 'weeps': 'weep',\n    'crept': 'creep', 'creeping': 'creep', 'creeps': 'creep',\n    'felt': 'feel', 'feeling': 'feel', 'feels': 'feel',\n    'dealt': 'deal', 'dealing': 'deal', 'deals': 'deal',\n    'meant': 'mean', 'meaning': 'mean', 'means': 'mean',\n    'led': 'lead', 'leading': 'lead', 'leads': 'lead',\n    'fed': 'feed', 'feeding': 'feed', 'feeds': 'feed',\n    'read': 'read', 'reading': 'read', 'reads': 'read',\n    'spread': 'spread', 'spreading': 'spread', 'spreads': 'spread',\n    'bet': 'bet', 'betting': 'bet', 'bets': 'bet',\n    'burst': 'burst', 'bursting': 'burst', 'bursts': 'burst',\n    'cast': 'cast', 'casting': 'cast', 'casts': 'cast',\n    'cost': 'cost', 'costing': 'cost', 'costs': 'cost',\n    'quit': 'quit', 'quitting': 'quit', 'quits': 'quit',\n    'rid': 'rid', 'ridding': 'rid', 'rids': 'rid',\n    'split': 'split', 'splitting': 'split', 'splits': 'split',\n    'bent': 'bend', 'bending': 'bend', 'bends': 'bend',\n    'lent': 'lend', 'lending': 'lend', 'lends': 'lend',\n    'wound': 'wind', 'winding': 'wind', 'winds': 'wind',\n    'bound': 'bind', 'binding': 'bind', 'binds': 'bind',\n    'ground': 'grind', 'grinding': 'grind', 'grinds': 'grind',\n    'shone': 'shine', 'shining': 'shine', 'shines': 'shine',\n    'spun': 'spin', 'spinning': 'spin', 'spins': 'spin',\n    'won': 'win', 'winning': 'win', 'wins': 'win',\n    'stung': 'sting', 'stinging': 'sting', 'stings': 'sting',\n    'swung': 'swing', 'swinging': 'swing', 'swings': 'swing',\n    'clung': 'cling', 'clinging': 'cling', 'clings': 'cling',\n    'wrung': 'wring', 'wringing': 'wring', 'wrings': 'wring',\n    'stank': 'stink', 'stinking': 'stink', 'stinks': 'stink', 'stunk': 'stink',\n    'drank': 'drink', 'drinking': 'drink', 'drinks': 'drink', 'drunk': 'drink',\n    'shrank': 'shrink', 'shrinking': 'shrink', 'shrinks': 'shrink', 'shrunk': 'shrink',\n    'blew': 'blow', 'blowing': 'blow', 'blows': 'blow', 'blown': 'blow',\n    'flew': 'fly', 'flying': 'fly', 'flies': 'fly', 'flown': 'fly',\n    'drew': 'draw', 'drawing': 'draw', 'draws': 'draw', 'drawn': 'draw',\n    'withdrew': 'withdraw', 'withdrawing': 'withdraw', 'withdraws': 'withdraw', 'withdrawn': 'withdraw',\n    'froze': 'freeze', 'freezing': 'freeze', 'freezes': 'freeze', 'frozen': 'freeze',\n    'chose': 'choose', 'choosing': 'choose', 'chooses': 'choose', 'chosen': 'choose',\n    'rose': 'rise', 'rising': 'rise', 'rises': 'rise', 'risen': 'rise',\n    'arose': 'arise', 'arising': 'arise', 'arises': 'arise', 'arisen': 'arise',\n    'rode': 'ride', 'riding': 'ride', 'rides': 'ride', 'ridden': 'ride',\n    'strode': 'stride', 'striding': 'stride', 'strides': 'stride', 'stridden': 'stride',\n    'woke': 'wake', 'waking': 'wake', 'wakes': 'wake', 'woken': 'wake',\n    'shook': 'shake', 'shaking': 'shake', 'shakes': 'shake', 'shaken': 'shake',\n    'mistook': 'mistake', 'mistaking': 'mistake', 'mistakes': 'mistake', 'mistaken': 'mistake',\n    'forgave': 'forgive', 'forgiving': 'forgive', 'forgives': 'forgive', 'forgiven': 'forgive',\n    'forgot': 'forget', 'forgetting': 'forget', 'forgets': 'forget', 'forgotten': 'forget',\n    'bit': 'bite', 'biting': 'bite', 'bites': 'bite', 'bitten': 'bite',\n    'hid': 'hide', 'hiding': 'hide', 'hides': 'hide', 'hidden': 'hide',\n    'slid': 'slide', 'sliding': 'slide', 'slides': 'slide',\n    'tore': 'tear', 'tearing': 'tear', 'tears': 'tear', 'torn': 'tear',\n    'swore': 'swear', 'swearing': 'swear', 'swears': 'swear', 'sworn': 'swear',\n    'bore': 'bear', 'bearing': 'bear', 'bears': 'bear', 'borne': 'bear', 'born': 'bear',\n    'was': 'be', 'were': 'be', 'being': 'be', 'been': 'be', 'am': 'be', 'is': 'be', 'are': 'be',\n    'had': 'have', 'having': 'have', 'has': 'have',\n    'did': 'do', 'doing': 'do', 'does': 'do', 'done': 'do',\n    'could': 'can', 'would': 'will', 'should': 'shall', 'might': 'may',\n    'sought': 'seek', 'seeking': 'seek', 'seeks': 'seek',\n    'struck': 'strike', 'striking': 'strike', 'strikes': 'strike', 'stricken': 'strike',\n    'wove': 'weave', 'weaving': 'weave', 'weaves': 'weave', 'woven': 'weave',\n    'strove': 'strive', 'striving': 'strive', 'strives': 'strive', 'striven': 'strive',\n    'throve': 'thrive', 'thriving': 'thrive', 'thrives': 'thrive', 'thriven': 'thrive',\n    'dove': 'dive', 'diving': 'dive', 'dives': 'dive',\n    'snuck': 'sneak', 'sneaking': 'sneak', 'sneaks': 'sneak',\n    'awoke': 'awake', 'awaking': 'awake', 'awakes': 'awake', 'awoken': 'awake',\n    'lit': 'light', 'lighting': 'light', 'lights': 'light',\n    'lay': 'lie', 'lying': 'lie', 'lies': 'lie', 'lain': 'lie',  // lie (눕다)\n    'spat': 'spit', 'spitting': 'spit', 'spits': 'spit',\n    'leapt': 'leap', 'leaping': 'leap', 'leaps': 'leap',\n    'dreamt': 'dream', 'dreaming': 'dream', 'dreams': 'dream',\n    'burnt': 'burn', 'burning': 'burn', 'burns': 'burn',\n    'learnt': 'learn', 'learning': 'learn', 'learns': 'learn',\n    'spelt': 'spell', 'spelling': 'spell', 'spells': 'spell',\n    'smelt': 'smell', 'smelling': 'smell', 'smells': 'smell',\n    'spoilt': 'spoil', 'spoiling': 'spoil', 'spoils': 'spoil',\n    'knelt': 'kneel', 'kneeling': 'kneel', 'kneels': 'kneel',\n    'leant': 'lean', 'leaning': 'lean', 'leans': 'lean'\n  };\n  if (irregulars[verb]) return irregulars[verb];\n  \n  // 규칙 동사 변환\n  if (verb.endsWith('ing')) {\n    // running -> run, getting -> get, making -> make\n    const base = verb.slice(0, -3);\n    if (base.endsWith(base.slice(-1)) && base.length > 2) {\n      return base.slice(0, -1); // running -> run\n    }\n    if (verb.endsWith('ying')) {\n      return verb.slice(0, -4) + 'y'; // studying -> study\n    }\n    if (verb.endsWith('eing')) {\n      return verb.slice(0, -3); // being -> be\n    }\n    return base.endsWith('e') ? base : (base + 'e').replace(/ee$/, 'e');\n  }\n  if (verb.endsWith('ed')) {\n    const base = verb.slice(0, -2);\n    if (base.endsWith(base.slice(-1)) && base.length > 2) {\n      return base.slice(0, -1);\n    }\n    if (verb.endsWith('ied')) {\n      return verb.slice(0, -3) + 'y';\n    }\n    return base;\n  }\n  if (verb.endsWith('s') && !verb.endsWith('ss')) {\n    if (verb.endsWith('ies')) {\n      return verb.slice(0, -3) + 'y';\n    }\n    if (verb.endsWith('es')) {\n      return verb.slice(0, -2);\n    }\n    return verb.slice(0, -1);\n  }\n  return verb;\n}\n\n// 동사 활용형 패턴 생성 (Python Lemma 서버 사용)\nasync function getVerbPatternFromServer(verb) {\n  try {\n    const response = await fetch('http://127.0.0.1:8768', {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json' },\n      body: JSON.stringify({ verb: verb })\n    });\n    const data = await response.json();\n    return data.patterns || [verb];\n  } catch (e) {\n    // 서버 연결 실패 시 기본 패턴 반환\n    return getVerbPatternFallback(verb);\n  }\n}\n\n// 서버 연결 실패 시 폴백 함수\nfunction getVerbPatternFallback(verb) {\n  verb = verb.toLowerCase();\n  const stem = getVerbStem(verb);\n  const patterns = new Set([verb, stem]);\n  \n  // 기본 불규칙 동사 매핑\n  const irregularForms = {\n    'be': ['be', 'am', 'is', 'are', 'was', 'were', 'been', 'being'],\n    'go': ['go', 'goes', 'going', 'went', 'gone'],\n    'arise': ['arise', 'arises', 'arising', 'arose', 'arisen'],\n    'descend': ['descend', 'descends', 'descending', 'descended'],\n    'come': ['come', 'comes', 'coming', 'came'],\n    'get': ['get', 'gets', 'getting', 'got', 'gotten'],\n    'take': ['take', 'takes', 'taking', 'took', 'taken'],\n    'make': ['make', 'makes', 'making', 'made'],\n    'give': ['give', 'gives', 'giving', 'gave', 'given'],\n    'run': ['run', 'runs', 'running', 'ran'],\n    'see': ['see', 'sees', 'seeing', 'saw', 'seen'],\n    'know': ['know', 'knows', 'knowing', 'knew', 'known'],\n    'think': ['think', 'thinks', 'thinking', 'thought'],\n    'find': ['find', 'finds', 'finding', 'found'],\n    'bring': ['bring', 'brings', 'bringing', 'brought'],\n    'hold': ['hold', 'holds', 'holding', 'held'],\n    'stand': ['stand', 'stands', 'standing', 'stood'],\n    'break': ['break', 'breaks', 'breaking', 'broke', 'broken'],\n    'write': ['write', 'writes', 'writing', 'wrote', 'written'],\n    'fall': ['fall', 'falls', 'falling', 'fell', 'fallen'],\n    'keep': ['keep', 'keeps', 'keeping', 'kept'],\n    'leave': ['leave', 'leaves', 'leaving', 'left'],\n    'grow': ['grow', 'grows', 'growing', 'grew', 'grown'],\n    'speak': ['speak', 'speaks', 'speaking', 'spoke', 'spoken'],\n    'draw': ['draw', 'draws', 'drawing', 'drew', 'drawn'],\n    'throw': ['throw', 'throws', 'throwing', 'threw', 'thrown'],\n    'show': ['show', 'shows', 'showing', 'showed', 'shown'],\n    'begin': ['begin', 'begins', 'beginning', 'began', 'begun'],\n    'drive': ['drive', 'drives', 'driving', 'drove', 'driven'],\n    'choose': ['choose', 'chooses', 'choosing', 'chose', 'chosen'],\n    'do': ['do', 'does', 'doing', 'did', 'done'],\n    'have': ['have', 'has', 'having', 'had'],\n    'say': ['say', 'says', 'saying', 'said'],\n    'tell': ['tell', 'tells', 'telling', 'told'],\n  };\n  \n  if (irregularForms[stem]) {\n    for (const form of irregularForms[stem]) {\n      patterns.add(form);\n    }\n  }\n  \n  // 규칙적 활용형\n  if (stem.endsWith('e') && !stem.endsWith('ee')) {\n    patterns.add(stem.slice(0, -1) + 'ing');\n  } else {\n    patterns.add(stem + 'ing');\n  }\n  if (stem.endsWith('e')) {\n    patterns.add(stem + 'd');\n  } else {\n    patterns.add(stem + 'ed');\n  }\n  patterns.add(stem + 's');\n  \n  return [...patterns];\n}\n\n// 동기 버전 (캐시 사용)\nconst verbPatternCache = {};\nfunction getVerbPattern(verb) {\n  verb = verb.toLowerCase();\n  if (verbPatternCache[verb]) {\n    return verbPatternCache[verb];\n  }\n  // 폴백 사용 (동기 호출용)\n  const patterns = getVerbPatternFallback(verb);\n  verbPatternCache[verb] = patterns;\n  return patterns;\n}\n\n// 구동사 하이라이트 함수 (동사 활용형 + 분리 가능 구동사 + 하이픈 구동사 지원)\nfunction highlightPhrasalVerb(text, phrasalVerb) {\n  if (!phrasalVerb) return text;\n\n  // 1. 하이픈으로 연결된 구동사 (go-to, run-down 등) 먼저 처리\n  if (phrasalVerb.includes('-')) {\n    const hyphenPattern = new RegExp('\\\\b' + phrasalVerb.replace(/-/g, '[-\\\\s]?') + '\\\\b', 'gi');\n    const highlighted = text.replace(hyphenPattern, '<mark style=\"background:#ffeb3b;padding:2px 4px;border-radius:3px;\">$&</mark>');\n    if (highlighted !== text) return highlighted;\n  }\n\n  const pvWords = phrasalVerb.toLowerCase().split(/[\\s-]+/);\n  if (pvWords.length < 2) {\n    // 단일 단어인 경우 그대로 하이라이트 시도\n    const singlePattern = new RegExp('\\\\b' + phrasalVerb + '\\\\b', 'gi');\n    const highlighted = text.replace(singlePattern, '<mark style=\"background:#ffeb3b;padding:2px 4px;border-radius:3px;\">$&</mark>');\n    if (highlighted !== text) return highlighted;\n    return text;\n  }\n\n  const verb = pvWords[0];\n  const particles = pvWords.slice(1);\n\n  // 동사의 모든 활용형 패턴\n  const verbPatterns = getVerbPattern(verb);\n  const verbRegex = '(' + verbPatterns.join('|') + ')';\n\n  // 전치사/부사 패턴 (각 파티클에 대해 하이픈 또는 공백 허용)\n  const particleRegex = '(' + particles.join('[\\\\s-]+') + ')';\n\n  // 시도할 패턴들 (우선순위 순)\n  const patternsToTry = [\n    // 1. 하이픈 연결 버전 (go-to, set-up 등)\n    new RegExp('\\\\b' + verbRegex + '[-]' + particleRegex + '\\\\b', 'gi'),\n    // 2. 동사 + (0-5단어) + 전치사 (분리 가능 구동사: make it through, never miss out)\n    new RegExp('\\\\b' + verbRegex + '(?:[\\\\s,]+\\\\S+){0,5}?[\\\\s,]+' + particleRegex + '\\\\b', 'gi'),\n    // 3. 동사 + 전치사 (붙어있는 경우: come forward, take out)\n    new RegExp('\\\\b' + verbRegex + '\\\\s+' + particleRegex + '\\\\b', 'gi'),\n  ];\n\n  for (const pattern of patternsToTry) {\n    const highlighted = text.replace(pattern, '<mark style=\"background:#ffeb3b;padding:2px 4px;border-radius:3px;\">$&</mark>');\n    if (highlighted !== text) return highlighted;\n  }\n\n  // 4. 각 동사 활용형으로 개별 시도 (더 넓은 범위)\n  for (const vp of verbPatterns) {\n    // 동사만이라도 하이라이트\n    const verbOnlyPattern = new RegExp(\n      '\\\\b' + vp + '(?:[\\\\s,]+\\\\S+){0,6}?[\\\\s,]+' + particles.join('[\\\\s-]+') + '\\\\b',\n      'gi'\n    );\n    const highlighted = text.replace(verbOnlyPattern, '<mark style=\"background:#ffeb3b;padding:2px 4px;border-radius:3px;\">$&</mark>');\n    if (highlighted !== text) return highlighted;\n  }\n\n  // 5. 마지막으로 동사만 하이라이트 (파티클이 문장에 없을 수 있음)\n  for (const vp of verbPatterns) {\n    const verbOnlyPattern = new RegExp('\\\\b' + vp + '\\\\b', 'gi');\n    if (verbOnlyPattern.test(text)) {\n      return text.replace(verbOnlyPattern, '<mark style=\"background:#ffeb3b;padding:2px 4px;border-radius:3px;\">$&</mark>');\n    }\n  }\n\n  return text;\n}\n\nfor (let i = 0; i < sentences.length; i++) {\n  const s = sentences[i];\n  const korean = s.korean || \"\";\n  const baseVerb = s.base_verb || \"\";\n  const phrasalVerb = s.phrasal_verb || \"\";\n  const particle = s.particle || \"\";\n  const literalMeaning = s.literal_meaning || \"\";\n  const idiomaticMeaning = s.idiomatic_meaning || \"\";\n  const coreImage = s.core_image || \"\";\n  const usageNote = s.usage_note || \"\";\n  const alternatives = s.alternatives || [];\n  const formalEquivalent = s.formal_equivalent || \"\";\n  const exampleSentences = s.example_sentences || [];\n\n  // 원본 문장 + 타임스탬프 가져오기\n  const result = findOriginalSentence(s, s.sentence_index, originalSentences);\n  const originalText = result.text;\n  const timestamp = result.timestamp;\n\n  // 구동사 하이라이트된 문장\n  const highlightedText = highlightPhrasalVerb(originalText, phrasalVerb);\n\n  const youtubeLink = `https://www.youtube.com/watch?v=${videoId}&t=${timestamp}s`;\n  const mins = Math.floor(timestamp / 60);\n  const secs = timestamp % 60;\n  const timeStr = `${mins}:${String(secs).padStart(2, '0')}`;\n\n  try {\n    // TTS: 원본 문장 사용\n    const ttsResponse = await this.helpers.httpRequest({\n      method: \"POST\",\n      url: `https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_TTS_KEY}`,\n      headers: { \"Content-Type\": \"application/json\" },\n      body: {\n        input: { text: originalText },\n        voice: { languageCode: \"en-US\", name: \"en-US-Neural2-F\" },\n        audioConfig: { audioEncoding: \"MP3\" }\n      },\n      json: true\n    });\n\n    const audioFilename = `youtube_${videoId}_${i+1}.mp3`;\n    await this.helpers.httpRequest({\n      method: \"POST\",\n      url: \"http://127.0.0.1:8765\",\n      headers: { \"Content-Type\": \"application/json\" },\n      body: {\n        action: \"storeMediaFile\",\n        version: 6,\n        params: { filename: audioFilename, data: ttsResponse.audioContent }\n      },\n      json: true\n    });\n\n    // 카드 앞면\n    const front = `\n<div style=\"font-size:18px;line-height:1.8;margin-bottom:15px;\">\n${highlightedText}\n</div>\n[sound:${audioFilename}]\n<br><br>\n<div style=\"background:#e3f2fd;padding:10px;border-radius:8px;display:inline-block;\">\n<span style=\"font-size:24px;font-weight:bold;color:#1565c0;\">${baseVerb}</span>\n<span style=\"font-size:18px;color:#666;\"> + </span>\n<span style=\"font-size:20px;font-weight:bold;color:#43a047;\">${particle}</span>\n<span style=\"font-size:18px;color:#666;\"> = </span>\n<span style=\"font-size:20px;font-weight:bold;color:#e65100;\">${phrasalVerb}</span>\n</div>\n<br><br>\n<a href=\"${youtubeLink}\" style=\"font-size:12px;color:#1976d2;\">📺 YouTube (${timeStr})</a>\n`;\n\n    const back = `\n<div style=\"font-size:16px;line-height:1.8;\">\n  <div style=\"background:#fff3e0;padding:12px;border-radius:8px;margin-bottom:12px;\">\n    <b style=\"color:#e65100;\">🔤 ${phrasalVerb}</b>\n  </div>\n\n  <div style=\"margin-bottom:15px;\">\n    <b>📖 한국어:</b><br>\n    ${korean}\n  </div>\n\n  <div style=\"background:#e8f5e9;padding:10px;border-radius:8px;margin-bottom:12px;\">\n    <b>🔍 의미 변화:</b><br>\n    <span style=\"color:#666;\">직역:</span> ${literalMeaning}<br>\n    <span style=\"color:#2e7d32;\">➜ 관용:</span> <b>${idiomaticMeaning}</b>\n  </div>\n\n  <div style=\"background:#fce4ec;padding:10px;border-radius:8px;margin-bottom:12px;\">\n    <b>💡 핵심 이미지:</b><br>\n    ${coreImage}\n  </div>\n\n  <div style=\"background:#f3e5f5;padding:10px;border-radius:8px;margin-bottom:12px;\">\n    <b>📝 사용법:</b><br>\n    ${usageNote}\n  </div>\n\n  ${alternatives && alternatives.length > 0 ? `\n  <div style=\"background:#e3f2fd;padding:10px;border-radius:8px;margin-bottom:12px;\">\n    <b>🔄 대체 표현:</b><br>\n    ${alternatives.join(\", \")}\n  </div>` : \"\"}\n\n  ${formalEquivalent ? `\n  <div style=\"background:#efebe9;padding:10px;border-radius:8px;margin-bottom:12px;\">\n    <b>👔 격식체:</b><br>\n    ${formalEquivalent}\n  </div>` : \"\"}\n\n  ${exampleSentences && exampleSentences.length > 0 ? `\n  <div style=\"background:#fffde7;padding:10px;border-radius:8px;\">\n    <b>✏️ 추가 예문:</b><br>\n    <ul style=\"margin:5px 0;padding-left:20px;\">\n      ${exampleSentences.map(s => \"<li>\" + s + \"</li>\").join(\"\")}\n    </ul>\n  </div>` : \"\"}\n</div>\n`;\n\n    const addNoteResponse = await this.helpers.httpRequest({\n      method: \"POST\",\n      url: \"http://127.0.0.1:8765\",\n      headers: { \"Content-Type\": \"application/json\" },\n      body: {\n        action: \"addNote\",\n        version: 6,\n        params: {\n          note: {\n            deckName: \"YouTube English\",\n            modelName: \"Basic\",\n            fields: { Front: front, Back: back },\n            options: { allowDuplicate: false },\n            tags: [\"youtube\", \"phrasal-verb\", `base-${baseVerb.toLowerCase()}`, `video-${videoId}`]\n          }\n        }\n      },\n      json: true\n    });\n\n    results.push({\n      success: true,\n      sentence: originalText.slice(0, 50),\n      phrasalVerb: phrasalVerb,\n      highlighted: highlightedText !== originalText,\n      timestamp: timestamp,\n      matchMethod: result.method,\n      noteId: addNoteResponse.result\n    });\n\n  } catch (e) {\n    results.push({ success: false, sentence: originalText.slice(0, 50), error: e.message });\n  }\n}\n\nreturn [{\n  json: {\n    totalSentences: sentences.length,\n    successCount: results.filter(r => r.success).length,\n    highlightedCount: results.filter(r => r.highlighted).length,\n    results: results,\n    videoId: videoId\n  }\n}];"
+      },
+      "id": "match-timestamps",
+      "name": "Process All Sentences",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        400
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 8AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -140,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Find an interesting English learning YouTube video and return only its URL. Make sure to check the used URLs list first and pick a video that hasn't been used before.",
+        "options": {
+          "systemMessage": "You are a helpful assistant that finds interesting English learning videos on YouTube.\n\nCRITICAL WORKFLOW:\n1. FIRST, use \"Read Used URLs\" tool to get the list of already used YouTube URLs\n2. Remember all those URLs - you must NOT select any video that matches those URLs\n3. Use YouTube search to find a video\n4. Check that the video URL is NOT in the used list\n5. If it's in the used list, search again with a different query\n6. Return ONLY the YouTube URL of a NEW, unused video\n\nTopics to explore: daily conversations, business English, travel, technology, culture, TED talks, interviews, movie scenes\nChoose videos that are 3-15 minutes long and have clear English speech.\n\nIMPORTANT: Always check the used URLs list first. Never return a duplicate URL."
+        }
+      },
+      "id": "ai-agent",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search YouTube for English learning videos. Returns video titles and URLs.",
+        "url": "https://www.googleapis.com/youtube/v3/search",
+        "sendQuery": true,
+        "parametersQuery": {
+          "values": [
+            {
+              "name": "part",
+              "valueProvider": "fieldValue",
+              "value": "snippet"
+            },
+            {
+              "name": "q"
+            },
+            {
+              "name": "type",
+              "valueProvider": "fieldValue",
+              "value": "video"
+            },
+            {
+              "name": "maxResults",
+              "valueProvider": "fieldValue",
+              "value": "5"
+            },
+            {
+              "name": "key",
+              "valueProvider": "fieldValue",
+              "value": "YOUR_GOOGLE_TTS_API_KEY"
+            }
+          ]
+        },
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "q",
+              "description": "The search query to find YouTube videos, e.g. 'English conversation practice', 'TED talk motivation'",
+              "type": "string"
+            }
+          ]
+        },
+        "optimizeResponse": true
+      },
+      "id": "youtube-tool",
+      "name": "YouTube Search",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        784,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// AI Agent 응답에서 YouTube URL 추출\nconst output = $input.first().json.output || $input.first().json.text || '';\n\nconst urlPattern = /https?:\\/\\/(?:www\\.)?(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/)([a-zA-Z0-9_-]{11})/;\nconst match = output.match(urlPattern);\n\nif (match) {\n  return [{ json: { youtubeUrl: match[0], videoId: match[1] } }];\n}\n\nthrow new Error('No YouTube URL found in AI Agent response');"
+      },
+      "id": "extract-url",
+      "name": "Extract URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "content": "# 🎬 YouTube → Anki 자동화\n\n**실행 방법:**\n1. 🖱️ Manual Trigger 클릭\n2. ⏰ 매일 오전 8시 자동 실행\n3. 📨 Webhook으로 URL 직접 전송",
+        "height": 150,
+        "width": 280
+      },
+      "id": "sticky-main",
+      "name": "Main Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        112,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🤖 AI Agent\n\nGemini 2.0 Flash가 자동으로:\n1. 영어 학습 주제 선정\n2. YouTube 검색\n3. 적절한 영상 URL 반환",
+        "height": 140,
+        "width": 250
+      },
+      "id": "sticky-agent",
+      "name": "Agent Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        624,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⏰ 트리거\n\n- **Manual**: 수동 실행\n- **Daily 8AM**: 매일 오전 8시",
+        "height": 100,
+        "width": 200
+      },
+      "id": "sticky-trigger",
+      "name": "Trigger Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        208,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3-flash-preview",
+        "options": {}
+      },
+      "id": "gemini-model",
+      "name": "Gemini 3.0 Flash",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        624,
+        480
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "zxzDD3EmNFfcoBm1",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "youtube-english",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-main",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        100
+      ],
+      "webhookId": "youtube-english-hook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8765",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"action\": \"sync\", \"version\": 6}",
+        "options": {}
+      },
+      "id": "anki-sync-node",
+      "name": "Anki Sync",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.all().map(item => item.json)) }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2000,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "results",
+        "include": "allFieldsExceptBinary"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "trigger-check",
+              "leftValue": "={{ $('Webhook').isExecuted }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-trigger-type",
+      "name": "Check Trigger Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1800,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Read the list of already used YouTube URLs from Google Sheets. Call this FIRST before searching YouTube. Returns a list of full YouTube URLs that you must NOT select.",
+        "method": "GET",
+        "url": "https://docs.google.com/spreadsheets/d/1BecGc6UpSk_0icnBGzb2drasbu4PYiVjt_TQUERoAvs/export?format=csv",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "optimizeResponse": true
+      },
+      "id": "sheets-read-tool",
+      "name": "Read Used URLs",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        900,
+        560
+      ],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "YlD8MLYZQq7WitsU",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1BecGc6UpSk_0icnBGzb2drasbu4PYiVjt_TQUERoAvs",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "save-url-sheets",
+      "name": "Save URL to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2500,
+        500
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "nD3hcemFAkeZMRm5",
+          "name": "Google Sheets account"
+        }
+      },
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "url-assign",
+              "name": "url",
+              "value": "={{ $('Extract URL').first().json.youtubeUrl }}",
+              "type": "string"
+            },
+            {
+              "id": "date-assign",
+              "name": "date",
+              "value": "={{ new Date().toISOString().split('T')[0] }}",
+              "type": "string"
+            },
+            {
+              "id": "video-id-assign",
+              "name": "video_id",
+              "value": "={{ $('Extract Video ID').first().json.videoId }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2664,
+        700
+      ],
+      "id": "prepare-url-data",
+      "name": "Prepare URL Data"
+    }
+  ],
+  "connections": {
+    "Extract Video ID": {
+      "main": [
+        [
+          {
+            "node": "Get YouTube Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get YouTube Transcript": {
+      "main": [
+        [
+          {
+            "node": "Parse & Group Sentences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Group Sentences": {
+      "main": [
+        [
+          {
+            "node": "Filter Practical Sentences (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Practical Sentences (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Process All Sentences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Extract URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract URL": {
+      "main": [
+        [
+          {
+            "node": "Extract Video ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Search": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini 3.0 Flash": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete Old Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 8AM": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process All Sentences": {
+      "main": [
+        [
+          {
+            "node": "Anki Sync",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare URL Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Used Video IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anki Sync": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Check Trigger Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Trigger Type": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        []
+      ]
+    },
+    "Read Used URLs": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare URL Data": {
+      "main": [
+        [
+          {
+            "node": "Save URL to Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  }
+}

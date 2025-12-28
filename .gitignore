@@ -1,0 +1,85 @@
+# API Keys & Credentials
+keys
+.env
+credentials/
+gen-lang-client-*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+package-lock.json
+
+# n8n
+.n8n/
+
+# Temp files
+*.tmp
+temp_*.json
+webhook_result.txt
+
+# Development/Debug scripts
+check*.py
+debug*.py
+fix*.py
+add*.py
+update*.py
+test*.py
+trigger*.py
+remove*.py
+disable*.py
+clean*.py
+convert*.py
+count*.py
+get*.py
+improve*.py
+list*.py
+monitor*.py
+reset*.py
+run*.py
+save*.py
+show*.py
+simplify*.py
+video*.py
+export_workflow.py
+
+# Test files
+test*.js
+
+# Backup files
+*.bak
+backup_*.json
+
+# Other workflows (keep only main export)
+workflows/
+!workflow_export.json
+
+# Audio files
+anki_audio/
+
+# Downloaded files
+drive-download-*/
+*.zip
+*.csv
+
+# Reference/sample files
+refsample/
+n8n-docs/
+n8n-workflow-samples/
+
+# VS Code
+.vscode/
+
+# Other
+Lee-SiHyeon.github.io/
+scripts/
+custom-nodes/
+process_all_code.js
+WORKFLOW_DOCUMENTATION.md
+youtube_to_anki.py
+youtube_anki.bat
+ㅁ
