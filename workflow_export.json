@@ -436,6 +436,19 @@
       ],
       "id": "prepare-url-data",
       "name": "Prepare URL Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Anki 덱을 .apkg 파일로 내보내기\nconst inputData = $input.first().json;\nconst videoId = inputData.videoId || \"unknown\";\nconst results = inputData.results || [];\n\n// 내보내기 경로 설정 (날짜 + 비디오ID)\nconst date = new Date().toISOString().slice(0, 10).replace(/-/g, '');\nconst exportPath = `C:/Users/User/Desktop/tcua/exports/YouTube_English_${date}_${videoId}.apkg`;\n\n// AnkiConnect로 덱 내보내기\nconst exportResponse = await this.helpers.httpRequest({\n  method: \"POST\",\n  url: \"http://127.0.0.1:8765\",\n  headers: { \"Content-Type\": \"application/json\" },\n  body: {\n    action: \"exportPackage\",\n    version: 6,\n    params: {\n      deck: \"YouTube English\",\n      path: exportPath,\n      includeSched: false\n    }\n  },\n  json: true\n});\n\nreturn [{\n  json: {\n    ...inputData,\n    exportPath: exportPath,\n    exportSuccess: exportResponse.result === true,\n    exportError: exportResponse.error\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2760,
+        340
+      ],
+      "id": "export-deck-node",
+      "name": "Export Anki Deck"
     }
   ],
   "connections": {
@@ -607,7 +620,7 @@
       "main": [
         [
           {
-            "node": "Check Trigger Type",
+            "node": "Export Anki Deck",
             "type": "main",
             "index": 0
           }
@@ -647,6 +660,17 @@
         [
           {
             "node": "Save URL to Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Export Anki Deck": {
+      "main": [
+        [
+          {
+            "node": "Check Trigger Type",
             "type": "main",
             "index": 0
           }

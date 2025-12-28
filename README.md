@@ -11,6 +11,7 @@ YouTube 영상에서 자동으로 구동사(Phrasal Verbs)를 추출하여 Anki 
 - 🤖 **AI 구동사 필터링**: Gemini AI가 실용적인 구동사 문장을 선별
 - 🔊 **Google TTS 음성**: 각 문장의 원어민 발음 오디오 생성
 - 🎯 **구동사 하이라이트**: 문장에서 구동사를 자동으로 강조 표시
+- 📦 **자동 덱 내보내기**: 워크플로우 완료 시 `.apkg` 파일 자동 생성
 - 📚 **풍부한 학습 정보**:
   - 한국어 번역
   - 직역 vs 관용적 의미
@@ -19,6 +20,11 @@ YouTube 영상에서 자동으로 구동사(Phrasal Verbs)를 추출하여 Anki 
   - **대체 표현/동의어**
   - **격식체 표현**
   - **추가 예문 2개**
+
+## 📥 샘플 덱 다운로드
+
+바로 사용해보고 싶다면 샘플 덱을 다운로드하세요:
+- [YouTube_English_PhrasalVerbs.apkg](./YouTube_English_PhrasalVerbs.apkg) (29개 구동사 카드)
 
 ## 📋 필수 요구사항
 
@@ -89,9 +95,11 @@ print(response.json())
 ## 📁 프로젝트 구조
 
 ```
-├── workflow_export.json     # n8n 워크플로우 (메인)
-├── lemma_server.py          # 동사 원형/활용형 서버 (Python)
-├── start_lemma_server.bat   # Lemma 서버 실행 스크립트 (Windows)
+├── workflow_export.json              # n8n 워크플로우 (메인)
+├── lemma_server.py                   # 동사 원형/활용형 서버 (Python)
+├── start_lemma_server.bat            # Lemma 서버 실행 스크립트 (Windows)
+├── YouTube_English_PhrasalVerbs.apkg # 샘플 Anki 덱 (29개 카드)
+├── exports/                          # 자동 생성되는 덱 저장 폴더
 └── README.md
 ```
 
