@@ -1,0 +1,686 @@
+{
+  "name": "Assertive English - 상황 대처 표현",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "// YouTube URL에서 Video ID 추출\nconst input = $input.first().json;\n// 다양한 입력 형식 지원\nconst url = input.body?.youtubeUrl || input.body?.youtube_url || input.youtubeUrl || input.youtube_url || '';\n\n// Video ID 추출 (다양한 YouTube URL 형식 지원)\nlet videoId = '';\nconst patterns = [\n  /(?:youtube\\.com\\/watch\\?v=)([^&]+)/,\n  /(?:youtu\\.be\\/)([^?]+)/,\n  /(?:youtube\\.com\\/embed\\/)([^?]+)/,\n  /(?:youtube\\.com\\/v\\/)([^?]+)/\n];\n\nfor (const pattern of patterns) {\n  const match = url.match(pattern);\n  if (match) {\n    videoId = match[1];\n    break;\n  }\n}\n\nif (!videoId) {\n  throw new Error('Invalid YouTube URL: ' + url);\n}\n\nreturn [{ json: { videoId, originalUrl: url } }];"
+      },
+      "id": "extract-video-id",
+      "name": "Extract Video ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ 'http://127.0.0.1:8767/transcript?videoId=' + $json.videoId }}",
+        "options": {}
+      },
+      "id": "get-transcript",
+      "name": "Get YouTube Transcript",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1050,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// AI Agent가 상황을 생성하고 대처 표현을 가르치는 카드 생성\nconst inputData = $input.first().json;\nconst videoId = inputData.videoId || \"assertive\";\n\n// AI Agent에게 상황 생성 요청을 위한 프롬프트\nconst situations = [\n  \"complaining about a defective product\",\n  \"asking for a refund\",\n  \"disagreeing politely in a meeting\",\n  \"questioning unclear instructions\",\n  \"negotiating a better price\",\n  \"expressing disappointment professionally\",\n  \"requesting urgent help\",\n  \"pushing back on unreasonable demands\",\n  \"clarifying misunderstandings\",\n  \"following up on unanswered emails\"\n];\n\n// 랜덤하게 5개 상황 선택\nconst selectedSituations = situations.sort(() => Math.random() - 0.5).slice(0, 5);\n\nconst prompt = `You are an expert English communication coach specializing in ASSERTIVE and PROFESSIONAL expressions.\n\n## Your Task\nGenerate practical English expressions for handling difficult situations confidently.\n\n## Situations to Cover:\n${selectedSituations.map((s, i) => `${i + 1}. ${s}`).join(\"\\n\")}\n\n## For EACH situation, provide:\n1. A realistic scenario description\n2. 2-3 key expressions natives actually use\n3. What NOT to say (common mistakes by non-native speakers)\n\n## Response Format (JSON array only):\n[{\n  \"situation_type\": \"complaining\",\n  \"scenario\": \"You bought a laptop online but it arrived with a cracked screen.\",\n  \"expressions\": [\n    {\n      \"expression\": \"I'd like to speak with someone about an issue with my order.\",\n      \"korean\": \"주문 관련 문제에 대해 담당자와 이야기하고 싶습니다.\",\n      \"tone\": \"polite but firm\",\n      \"usage_context\": \"Opening line when calling customer service\"\n    },\n    {\n      \"expression\": \"This isn't acceptable. I expect a full refund or replacement.\",\n      \"korean\": \"이건 받아들일 수 없습니다. 전액 환불이나 교환을 원합니다.\",\n      \"tone\": \"assertive\",\n      \"usage_context\": \"When the first response isn't satisfactory\"\n    }\n  ],\n  \"avoid_saying\": [\n    {\n      \"wrong\": \"I'm sorry to bother you, but...\",\n      \"why_wrong\": \"Apologizing weakens your position when YOU are the wronged party\",\n      \"better\": \"I need your help resolving an issue.\"\n    }\n  ],\n  \"cultural_note\": \"In Western business culture, being direct is expected and respected. Excessive politeness can be seen as weakness.\"\n}]\n\nGenerate 5 complete situation cards with varied scenarios.`;\n\nreturn [{\n  json: {\n    prompt: prompt,\n    situations: selectedSituations,\n    videoId: videoId\n  }\n}];\n"
+      },
+      "id": "parse-transcript",
+      "name": "Parse & Group Sentences",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Gemini API로 상황별 표현 생성\nconst inputData = $input.first().json;\nconst prompt = inputData.prompt;\nconst videoId = inputData.videoId || \"assertive\";\n\nconst GEMINI_KEY = \"YOUR_GEMINI_API_KEY\";\n\nconst response = await this.helpers.httpRequest({\n  method: \"POST\",\n  url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,\n  headers: { \"Content-Type\": \"application/json\" },\n  body: {\n    contents: [{ parts: [{ text: prompt }] }],\n    generationConfig: {\n      temperature: 0.8,\n      maxOutputTokens: 4000,\n    }\n  },\n  json: true\n});\n\nlet situationCards = [];\ntry {\n  const text = response.candidates[0].content.parts[0].text;\n  const jsonMatch = text.match(/\\[\\s*\\{[\\s\\S]*\\}\\s*\\]/);\n  if (jsonMatch) {\n    situationCards = JSON.parse(jsonMatch[0]);\n  }\n} catch (e) {\n  throw new Error(\"Failed to parse Gemini response: \" + e.message);\n}\n\nreturn [{\n  json: {\n    situationCards: situationCards,\n    videoId: videoId,\n    count: situationCards.length\n  }\n}];\n"
+      },
+      "id": "gemini-filter",
+      "name": "Filter Practical Sentences (Gemini)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1550,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 상황 대처 표현 Anki 카드 생성\nconst inputData = $input.first().json;\nconst situationCards = inputData.situationCards || [];\nconst videoId = inputData.videoId || \"assertive\";\n\nif (situationCards.length === 0) {\n  return [{ json: { error: \"No situation cards\", videoId } }];\n}\n\nconst results = [];\nconst GOOGLE_TTS_KEY = \"YOUR_GOOGLE_TTS_API_KEY\";\n\nfor (let i = 0; i < situationCards.length; i++) {\n  const card = situationCards[i];\n  \n  try {\n    // 첫 번째 표현으로 TTS 생성\n    const mainExpression = card.expressions[0]?.expression || \"\";\n    \n    let audioTag = \"\";\n    if (mainExpression) {\n      const ttsResponse = await this.helpers.httpRequest({\n        method: \"POST\",\n        url: `https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_TTS_KEY}`,\n        headers: { \"Content-Type\": \"application/json\" },\n        body: {\n          input: { text: mainExpression },\n          voice: { languageCode: \"en-US\", name: \"en-US-Neural2-J\" },\n          audioConfig: { audioEncoding: \"MP3\", speakingRate: 0.9 }\n        },\n        json: true\n      });\n      \n      if (ttsResponse.audioContent) {\n        const audioFileName = `assertive_${videoId}_${i + 1}.mp3`;\n        await this.helpers.httpRequest({\n          method: \"POST\",\n          url: \"http://127.0.0.1:8765\",\n          headers: { \"Content-Type\": \"application/json\" },\n          body: {\n            action: \"storeMediaFile\",\n            version: 6,\n            params: {\n              filename: audioFileName,\n              data: ttsResponse.audioContent\n            }\n          },\n          json: true\n        });\n        audioTag = `[sound:${audioFileName}]`;\n      }\n    }\n    \n    // Front 카드 - 상황 설명\n    const front = `\n<div style=\"font-size:18px;line-height:1.8;color:#333;padding:15px;\">\n  <div style=\"background:#ffebee;padding:15px;border-radius:10px;margin-bottom:15px;\">\n    <b style=\"color:#c62828;font-size:20px;\">🎭 상황</b><br><br>\n    ${card.scenario}\n  </div>\n  <div style=\"text-align:center;color:#666;font-size:14px;\">\n    이 상황에서 어떻게 말할까요?\n  </div>\n</div>\n`;\n    \n    // Back 카드 - 표현들 + 피해야 할 표현\n    let expressionsHtml = card.expressions.map((exp, idx) => `\n      <div style=\"background:#e8f5e9;padding:12px;border-radius:8px;margin-bottom:10px;color:#333;\">\n        <div style=\"font-size:16px;margin-bottom:5px;\">\n          ${idx === 0 ? audioTag : \"\"}\n          <b>\"${exp.expression}\"</b>\n        </div>\n        <div style=\"color:#666;font-size:14px;\">→ ${exp.korean}</div>\n        <div style=\"margin-top:5px;\">\n          <span style=\"background:#2e7d32;color:white;padding:2px 8px;border-radius:4px;font-size:12px;\">${exp.tone}</span>\n          <span style=\"color:#888;font-size:12px;margin-left:8px;\">${exp.usage_context}</span>\n        </div>\n      </div>\n    `).join(\"\");\n    \n    let avoidHtml = card.avoid_saying ? card.avoid_saying.map(avoid => `\n      <div style=\"background:#ffebee;padding:10px;border-radius:8px;margin-bottom:8px;color:#333;\">\n        <div style=\"color:#c62828;\"><b>❌ \"${avoid.wrong}\"</b></div>\n        <div style=\"font-size:13px;color:#666;\">→ ${avoid.why_wrong}</div>\n        <div style=\"color:#2e7d32;font-size:13px;margin-top:5px;\">✅ Better: \"${avoid.better}\"</div>\n      </div>\n    `).join(\"\") : \"\";\n    \n    const back = `\n<div style=\"font-size:16px;line-height:1.8;color:#333;\">\n  <div style=\"background:#fff3e0;padding:12px;border-radius:8px;margin-bottom:12px;color:#333;\">\n    <b style=\"color:#e65100;\">💪 ${card.situation_type.toUpperCase()}</b>\n  </div>\n  \n  <div style=\"margin-bottom:15px;\">\n    <b>✨ 이렇게 말하세요:</b>\n  </div>\n  ${expressionsHtml}\n  \n  ${avoidHtml ? `\n  <div style=\"margin-top:15px;margin-bottom:10px;\">\n    <b>🚫 피해야 할 표현:</b>\n  </div>\n  ${avoidHtml}\n  ` : \"\"}\n  \n  ${card.cultural_note ? `\n  <div style=\"background:#e3f2fd;padding:10px;border-radius:8px;margin-top:15px;color:#333;\">\n    <b>💡 문화 팁:</b><br>\n    ${card.cultural_note}\n  </div>\n  ` : \"\"}\n</div>\n`;\n    \n    // Anki에 카드 추가\n    const addNoteResponse = await this.helpers.httpRequest({\n      method: \"POST\",\n      url: \"http://127.0.0.1:8765\",\n      headers: { \"Content-Type\": \"application/json\" },\n      body: {\n        action: \"addNote\",\n        version: 6,\n        params: {\n          note: {\n            deckName: \"Assertive English\",\n            modelName: \"Basic\",\n            fields: { Front: front, Back: back },\n            options: { allowDuplicate: false },\n            tags: [\"assertive\", \"situation\", card.situation_type, `batch-${videoId}`]\n          }\n        }\n      },\n      json: true\n    });\n    \n    results.push({\n      success: true,\n      situation: card.situation_type,\n      noteId: addNoteResponse.result\n    });\n    \n  } catch (e) {\n    results.push({\n      success: false,\n      situation: card.situation_type,\n      error: e.message\n    });\n  }\n}\n\nreturn [{\n  json: {\n    totalCards: situationCards.length,\n    successCount: results.filter(r => r.success).length,\n    results: results,\n    videoId: videoId\n  }\n}];\n"
+      },
+      "id": "match-timestamps",
+      "name": "Process All Sentences",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        100
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Daily 8AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "Find an interesting English learning YouTube video and return only its URL. Make sure to check the used URLs list first and pick a video that hasn't been used before.",
+        "options": {
+          "systemMessage": "You are a helpful assistant that finds interesting English learning videos on YouTube.\n\nCRITICAL WORKFLOW:\n1. FIRST, use \"Read Used URLs\" tool to get the list of already used YouTube URLs\n2. Remember all those URLs - you must NOT select any video that matches those URLs\n3. Use YouTube search to find a video\n4. Check that the video URL is NOT in the used list\n5. If it's in the used list, search again with a different query\n6. Return ONLY the YouTube URL of a NEW, unused video\n\nTopics to explore: daily conversations, business English, travel, technology, culture, TED talks, interviews, movie scenes\nChoose videos that are 3-15 minutes long and have clear English speech.\n\nIMPORTANT: Always check the used URLs list first. Never return a duplicate URL."
+        }
+      },
+      "id": "ai-agent",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        300,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Search YouTube for English learning videos. Returns video titles and URLs.",
+        "url": "https://www.googleapis.com/youtube/v3/search",
+        "sendQuery": true,
+        "parametersQuery": {
+          "values": [
+            {
+              "name": "part",
+              "valueProvider": "fieldValue",
+              "value": "snippet"
+            },
+            {
+              "name": "q"
+            },
+            {
+              "name": "type",
+              "valueProvider": "fieldValue",
+              "value": "video"
+            },
+            {
+              "name": "maxResults",
+              "valueProvider": "fieldValue",
+              "value": "5"
+            },
+            {
+              "name": "key",
+              "valueProvider": "fieldValue",
+              "value": "YOUR_GOOGLE_TTS_API_KEY"
+            }
+          ]
+        },
+        "placeholderDefinitions": {
+          "values": [
+            {
+              "name": "q",
+              "description": "The search query to find YouTube videos, e.g. 'English conversation practice', 'TED talk motivation'",
+              "type": "string"
+            }
+          ]
+        },
+        "optimizeResponse": true
+      },
+      "id": "youtube-tool",
+      "name": "YouTube Search",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// AI Agent 응답에서 YouTube URL 추출\nconst output = $input.first().json.output || $input.first().json.text || '';\n\nconst urlPattern = /https?:\\/\\/(?:www\\.)?(?:youtube\\.com\\/watch\\?v=|youtu\\.be\\/)([a-zA-Z0-9_-]{11})/;\nconst match = output.match(urlPattern);\n\nif (match) {\n  return [{ json: { youtubeUrl: match[0], videoId: match[1] } }];\n}\n\nthrow new Error('No YouTube URL found in AI Agent response');"
+      },
+      "id": "extract-url",
+      "name": "Extract URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        550,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "# 🎬 YouTube → Anki 자동화\n\n**실행 방법:**\n1. 🖱️ Manual Trigger 클릭\n2. ⏰ 매일 오전 8시 자동 실행\n3. 📨 Webhook으로 URL 직접 전송",
+        "height": 150,
+        "width": 280
+      },
+      "id": "sticky-main",
+      "name": "Main Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        112,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 🤖 AI Agent\n\nGemini 2.0 Flash가 자동으로:\n1. 영어 학습 주제 선정\n2. YouTube 검색\n3. 적절한 영상 URL 반환",
+        "height": 140,
+        "width": 250
+      },
+      "id": "sticky-agent",
+      "name": "Agent Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        624,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## ⏰ 트리거\n\n- **Manual**: 수동 실행\n- **Daily 8AM**: 매일 오전 8시",
+        "height": 100,
+        "width": 200
+      },
+      "id": "sticky-trigger",
+      "name": "Trigger Info",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        208,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-3-flash-preview",
+        "options": {}
+      },
+      "id": "gemini-model",
+      "name": "Gemini 3.0 Flash",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        300,
+        300
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "zxzDD3EmNFfcoBm1",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assertive-english",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-main",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "youtube-english-hook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8765",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"action\": \"sync\", \"version\": 6}",
+        "options": {}
+      },
+      "id": "anki-sync-node",
+      "name": "Anki Sync",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2050,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($input.all().map(item => item.json)) }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2550,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "destinationFieldName": "results",
+        "include": "allFieldsExceptBinary"
+      },
+      "id": "aggregate-results",
+      "name": "Aggregate Results",
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        2050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "trigger-check",
+              "leftValue": "={{ $('Webhook').isExecuted }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-trigger-type",
+      "name": "Check Trigger Type",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "toolDescription": "Read the list of already used YouTube URLs from Google Sheets. Call this FIRST before searching YouTube. Returns a list of full YouTube URLs that you must NOT select.",
+        "method": "GET",
+        "url": "https://docs.google.com/spreadsheets/d/1BecGc6UpSk_0icnBGzb2drasbu4PYiVjt_TQUERoAvs/export?format=csv",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "optimizeResponse": true
+      },
+      "id": "sheets-read-tool",
+      "name": "Read Used URLs",
+      "type": "@n8n/n8n-nodes-langchain.toolHttpRequest",
+      "typeVersion": 1.1,
+      "position": [
+        500,
+        500
+      ],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "YlD8MLYZQq7WitsU",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1BecGc6UpSk_0icnBGzb2drasbu4PYiVjt_TQUERoAvs",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "id"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "save-url-sheets",
+      "name": "Save URL to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2300,
+        500
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "nD3hcemFAkeZMRm5",
+          "name": "Google Sheets account"
+        }
+      },
+      "disabled": false
+    },
+    {
+      "parameters": {
+        "mode": "manual",
+        "duplicateItem": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "url-assign",
+              "name": "url",
+              "value": "={{ $('Extract URL').first().json.youtubeUrl }}",
+              "type": "string"
+            },
+            {
+              "id": "date-assign",
+              "name": "date",
+              "value": "={{ new Date().toISOString().split('T')[0] }}",
+              "type": "string"
+            },
+            {
+              "id": "video-id-assign",
+              "name": "video_id",
+              "value": "={{ $('Extract Video ID').first().json.videoId }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2050,
+        500
+      ],
+      "id": "prepare-url-data",
+      "name": "Prepare URL Data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Anki 덱을 .apkg 파일로 내보내기\nconst inputData = $input.first().json;\nconst videoId = inputData.videoId || \"unknown\";\nconst results = inputData.results || [];\n\n// 내보내기 경로 설정 (날짜 + 비디오ID)\nconst date = new Date().toISOString().slice(0, 10).replace(/-/g, '');\nconst exportPath = `C:/Users/User/Desktop/tcua/exports/YouTube_English_${date}_${videoId}.apkg`;\n\n// AnkiConnect로 덱 내보내기\nconst exportResponse = await this.helpers.httpRequest({\n  method: \"POST\",\n  url: \"http://127.0.0.1:8765\",\n  headers: { \"Content-Type\": \"application/json\" },\n  body: {\n    action: \"exportPackage\",\n    version: 6,\n    params: {\n      deck: \"YouTube English\",\n      path: exportPath,\n      includeSched: false\n    }\n  },\n  json: true\n});\n\nreturn [{\n  json: {\n    ...inputData,\n    exportPath: exportPath,\n    exportSuccess: exportResponse.result === true,\n    exportError: exportResponse.error\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2300,
+        100
+      ],
+      "id": "export-deck-node",
+      "name": "Export Anki Deck"
+    }
+  ],
+  "connections": {
+    "Extract Video ID": {
+      "main": [
+        [
+          {
+            "node": "Get YouTube Transcript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get YouTube Transcript": {
+      "main": [
+        [
+          {
+            "node": "Parse & Group Sentences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Group Sentences": {
+      "main": [
+        [
+          {
+            "node": "Filter Practical Sentences (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Practical Sentences (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Process All Sentences",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Extract URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract URL": {
+      "main": [
+        [
+          {
+            "node": "Extract Video ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Search": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini 3.0 Flash": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete Old Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 8AM": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process All Sentences": {
+      "main": [
+        [
+          {
+            "node": "Anki Sync",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare URL Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Used Video IDs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anki Sync": {
+      "main": [
+        [
+          {
+            "node": "Aggregate Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate Results": {
+      "main": [
+        [
+          {
+            "node": "Export Anki Deck",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Trigger Type": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        []
+      ]
+    },
+    "Read Used URLs": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare URL Data": {
+      "main": [
+        [
+          {
+            "node": "Save URL to Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Export Anki Deck": {
+      "main": [
+        [
+          {
+            "node": "Check Trigger Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  }
+}
