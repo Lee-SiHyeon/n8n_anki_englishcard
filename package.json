@@ -1,0 +1,18 @@
+{
+  "name": "n8n-workflows",
+  "version": "1.0.0",
+  "description": "n8n Workflow Development Project",
+  "scripts": {
+    "start": "n8n start",
+    "dev": "n8n start --tunnel",
+    "import": "n8n import:workflow --input",
+    "export": "n8n export:workflow --all --output=./workflows/",
+    "export:credentials": "n8n export:credentials --all --output=./credentials/",
+    "list": "n8n list:workflow",
+    "execute": "n8n execute --id",
+    "help": "n8n --help"
+  },
+  "keywords": ["n8n", "automation", "workflow"],
+  "author": "",
+  "license": "MIT"
+}
